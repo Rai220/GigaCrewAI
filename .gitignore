@@ -6,3 +6,7 @@ dist/
 assets/*
 .idea
 test.py
+venv/
+.github
+.vscode/
+src/simple_agents.py
