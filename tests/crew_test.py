@@ -2,6 +2,7 @@
 
 import json
 
+import pydantic_core
 import pytest
 
 from crewai.agent import Agent
@@ -140,6 +141,55 @@ def test_crew_creation():
 
 5. **AI Startups: The Game Changers of the Tech Industry** - In the world of tech, AI startups are the bold pioneers charting new territories. This article will spotlight these game changers, showcasing how their innovative products and services are driving the AI revolution. It's a unique opportunity to catch a glimpse of the entrepreneurial side of AI, offering inspiration for the tech enthusiasts and dreamers alike."""
     )
+
+
+@pytest.mark.vcr(filter_headers=["authorization"])
+def test_hierarchical_process():
+    from langchain_openai import ChatOpenAI
+
+    task = Task(
+        description="Come up with a list of 5 interesting ideas to explore for an article, then write one amazing paragraph highlight for each idea that showcases how good an article about this topic could be. Return the list of ideas with their paragraph and your notes.",
+    )
+
+    crew = Crew(
+        agents=[researcher, writer],
+        process=Process.hierarchical,
+        manager_llm=ChatOpenAI(temperature=0, model="gpt-4"),
+        tasks=[task],
+    )
+
+    assert (
+        crew.kickoff()
+        == """Here are the 5 interesting ideas with a highlight paragraph for each:
+
+1. "The Future of AI in Healthcare: Predicting Diseases Before They Happen"
+   - "Imagine a future where AI empowers us to detect diseases before they arise, transforming healthcare from reactive to proactive. Machine learning algorithms, trained on vast amounts of patient data, could potentially predict heart diseases, strokes, or cancers before they manifest, allowing for early interventions and significantly improving patient outcomes. This article will delve into the rapid advancements in AI within the healthcare sector and how these technologies are ushering us into a new era of predictive medicine."
+
+2. "How AI is Changing the Way We Cook: An Insight into Smart Kitchens"
+   - "From the humble home kitchen to grand culinary stages, AI is revolutionizing the way we cook. Smart appliances, equipped with advanced sensors and predictive algorithms, are turning kitchens into creative playgrounds, offering personalized recipes, precise cooking instructions, and even automated meal preparation. This article explores the fascinating intersection of AI and gastronomy, revealing how technology is transforming our culinary experiences."
+
+3. "Redefining Fitness with AI: Personalized Workout Plans and Nutritional Advice"
+   - "Fitness reimagined – that's the promise of AI in the wellness industry. Picture a personal trainer who knows your strengths, weaknesses, and nutritional needs intimately. An AI-powered fitness app can provide this personalized experience, adapting your workout plans and dietary recommendations in real-time based on your progress and feedback. Join us as we unpack how AI is revolutionizing the fitness landscape, offering personalized, data-driven approaches to health and well-being."
+
+4. "AI and the Art World: How Technology is Shaping Creativity"
+   - "Art and AI may seem like unlikely partners, but their synergy is sparking a creative revolution. AI algorithms are now creating mesmerizing artworks, challenging our perceptions of creativity and originality. From AI-assisted painting to generative music composition, this article will take you on a journey through the fascinating world of AI in art, exploring how technology is reshaping the boundaries of human creativity."
+
+5. "AI in Space Exploration: The Next Frontier"
+   - "The vast expanse of space, once the sole domain of astronauts and rovers, is the next frontier for AI. AI technology is playing an increasingly vital role in space exploration, from predicting space weather to assisting in interstellar navigation. This article will delve into the exciting intersection of AI and space exploration, exploring how these advanced technologies are helping us uncover the mysteries of the cosmos.\""""
+    )
+
+
+def test_manager_llm_requirement_for_hierarchical_process():
+    task = Task(
+        description="Come up with a list of 5 interesting ideas to explore for an article, then write one amazing paragraph highlight for each idea that showcases how good an article about this topic could be. Return the list of ideas with their paragraph and your notes.",
+    )
+
+    with pytest.raises(pydantic_core._pydantic_core.ValidationError):
+        Crew(
+            agents=[researcher, writer],
+            process=Process.hierarchical,
+            tasks=[task],
+        )
 
 
 @pytest.mark.vcr(filter_headers=["authorization"])
@@ -304,3 +354,70 @@ def test_api_calls_throttling(capsys):
         captured = capsys.readouterr()
         assert "Max RPM reached, waiting for next minute to start." in captured.out
         moveon.assert_called()
+
+
+def test_agents_rpm_is_never_set_if_crew_max_RPM_is_not_set():
+    agent = Agent(
+        role="test role",
+        goal="test goal",
+        backstory="test backstory",
+        allow_delegation=False,
+        verbose=True,
+    )
+
+    task = Task(
+        description="just say hi!",
+        agent=agent,
+    )
+
+    Crew(agents=[agent], tasks=[task], verbose=2)
+
+    assert agent._rpm_controller is None
+
+
+def test_async_task_execution():
+    import threading
+    from unittest.mock import patch
+
+    from crewai.tasks.task_output import TaskOutput
+
+    list_ideas = Task(
+        description="Give me a list of 5 interesting ideas to explore for na article, what makes them unique and interesting.",
+        expected_output="Bullet point list of 5 important events.",
+        agent=researcher,
+        async_execution=True,
+    )
+    list_important_history = Task(
+        description="Research the history of AI and give me the 5 most important events that shaped the technology.",
+        expected_output="Bullet point list of 5 important events.",
+        agent=researcher,
+        async_execution=True,
+    )
+    write_article = Task(
+        description="Write an article about the history of AI and its most important events.",
+        expected_output="A 4 paragraph article about AI.",
+        agent=writer,
+        context=[list_ideas, list_important_history],
+    )
+
+    crew = Crew(
+        agents=[researcher, writer],
+        process=Process.sequential,
+        tasks=[list_ideas, list_important_history, write_article],
+    )
+
+    with patch.object(Agent, "execute_task") as execute:
+        execute.return_value = "ok"
+        with patch.object(threading.Thread, "start") as start:
+            thread = threading.Thread(target=lambda: None, args=()).start()
+            start.return_value = thread
+            with patch.object(threading.Thread, "join", wraps=thread.join()) as join:
+                list_ideas.output = TaskOutput(
+                    description="A 4 paragraph article about AI.", result="ok"
+                )
+                list_important_history.output = TaskOutput(
+                    description="A 4 paragraph article about AI.", result="ok"
+                )
+                crew.kickoff()
+                start.assert_called()
+                join.assert_called()

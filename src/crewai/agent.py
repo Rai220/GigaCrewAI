@@ -1,6 +1,7 @@
 import uuid
 from typing import Any, List, Optional
 
+from langchain.agents.agent import RunnableAgent
 from langchain.agents.format_scratchpad import format_log_to_str
 from langchain.memory import ConversationSummaryMemory
 from langchain.tools.render import render_text_description
@@ -44,9 +45,10 @@ class Agent(BaseModel):
             max_rpm: Maximum number of requests per minute for the agent execution to be respected.
             verbose: Whether the agent execution should be in verbose mode.
             allow_delegation: Whether the agent is allowed to delegate tasks to other agents.
+            tools: Tools at agents disposal
     """
 
-    __hash__ = object.__hash__
+    __hash__ = object.__hash__  # type: ignore
     _logger: Logger = PrivateAttr()
     _rpm_controller: RPMController = PrivateAttr(default=None)
     _request_within_rpm_limit: Any = PrivateAttr(default=None)
@@ -79,22 +81,19 @@ class Agent(BaseModel):
     max_iter: Optional[int] = Field(
         default=15, description="Maximum iterations for an agent to execute a task"
     )
-    agent_executor: Optional[InstanceOf[CrewAgentExecutor]] = Field(
+    agent_executor: InstanceOf[CrewAgentExecutor] = Field(
         default=None, description="An instance of the CrewAgentExecutor class."
     )
-    tools_handler: Optional[InstanceOf[ToolsHandler]] = Field(
+    tools_handler: InstanceOf[ToolsHandler] = Field(
         default=None, description="An instance of the ToolsHandler class."
     )
-    cache_handler: Optional[InstanceOf[CacheHandler]] = Field(
+    cache_handler: InstanceOf[CacheHandler] = Field(
         default=CacheHandler(), description="An instance of the CacheHandler class."
     )
-    i18n: Optional[I18N] = Field(
-        default=I18N(), description="Internationalization settings."
-    )
-    llm: Optional[Any] = Field(
+    i18n: I18N = Field(default=I18N(), description="Internationalization settings.")
+    llm: Any = Field(
         default_factory=lambda: ChatOpenAI(
-            temperature=0.7,
-            model_name="gpt-4",
+            model="gpt-4",
         ),
         description="Language model that will run the agent.",
     )
@@ -109,6 +108,7 @@ class Agent(BaseModel):
 
     @model_validator(mode="after")
     def set_private_attrs(self):
+        """Set private attributes."""
         self._logger = Logger(self.verbose)
         if self.max_rpm and not self._rpm_controller:
             self._rpm_controller = RPMController(
@@ -118,12 +118,16 @@ class Agent(BaseModel):
 
     @model_validator(mode="after")
     def check_agent_executor(self) -> "Agent":
+        """Check if the agent executor is set."""
         if not self.agent_executor:
             self.set_cache_handler(self.cache_handler)
         return self
 
     def execute_task(
-        self, task: str, context: str = None, tools: List[Any] = None
+        self,
+        task: str,
+        context: Optional[str] = None,
+        tools: Optional[List[Any]] = None,
     ) -> str:
         """Execute a task with the agent.
 
@@ -135,6 +139,7 @@ class Agent(BaseModel):
         Returns:
             Output of the agent
         """
+
         if context:
             task = self.i18n.slice("task_with_context").format(
                 task=task, context=context
@@ -157,17 +162,27 @@ class Agent(BaseModel):
 
         return result
 
-    def set_cache_handler(self, cache_handler) -> None:
+    def set_cache_handler(self, cache_handler: CacheHandler) -> None:
+        """Set the cache handler for the agent.
+
+        Args:
+            cache_handler: An instance of the CacheHandler class.
+        """
         self.cache_handler = cache_handler
         self.tools_handler = ToolsHandler(cache=self.cache_handler)
-        self.__create_agent_executor()
+        self._create_agent_executor()
 
-    def set_rpm_controller(self, rpm_controller) -> None:
+    def set_rpm_controller(self, rpm_controller: RPMController) -> None:
+        """Set the rpm controller for the agent.
+
+        Args:
+            rpm_controller: An instance of the RPMController class.
+        """
         if not self._rpm_controller:
             self._rpm_controller = rpm_controller
-            self.__create_agent_executor()
+            self._create_agent_executor()
 
-    def __create_agent_executor(self) -> CrewAgentExecutor:
+    def _create_agent_executor(self) -> None:
         """Create an agent executor for the agent.
 
         Returns:
@@ -188,9 +203,9 @@ class Agent(BaseModel):
         }
 
         if self._rpm_controller:
-            executor_args[
-                "request_within_rpm_limit"
-            ] = self._rpm_controller.check_or_wait
+            executor_args["request_within_rpm_limit"] = (
+                self._rpm_controller.check_or_wait
+            )
 
         if self.memory:
             summary_memory = ConversationSummaryMemory(
@@ -219,7 +234,9 @@ class Agent(BaseModel):
                 i18n=self.i18n,
             )
         )
-        self.agent_executor = CrewAgentExecutor(agent=inner_agent, **executor_args)
+        self.agent_executor = CrewAgentExecutor(
+            agent=RunnableAgent(runnable=inner_agent), **executor_args
+        )
 
     @staticmethod
     def __tools_names(tools) -> str:
