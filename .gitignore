@@ -10,3 +10,7 @@ venv/
 .github
 .vscode/
 src/simple_agents.py
+test/
+docs_crew/
+chroma.sqlite3
+old_en.json
